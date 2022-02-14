@@ -1,0 +1,64 @@
+# Example to use Docker instead of containerd & nerdctl
+# $ limactl start ./docker.yaml
+# $ limactl shell docker docker run -it -v $HOME:$HOME --rm alpine
+# To run `docker` on the host (assumes docker-cli is installed):
+# $ export DOCKER_HOST=$(limactl list docker --format 'unix://{{.Dir}}/sock/docker.sock')
+# $ docker ...
+# This example requires Lima v0.8.0 or later
+images:
+- location: "https://cloud.debian.org/images/cloud/bullseye/daily/20220102-875/debian-11-generic-amd64-daily-20220102-875.qcow2"
+  arch: "x86_64"
+  digest: "sha512:3810dda9397bcf22f31c0aba5631186ad6169aab0b470961fc02664305c85bce7ce5c194d3e426777e9436a260f0241ad091f92f795e2bfc27c5be45b489f94e"
+- location: "https://cloud.debian.org/images/cloud/bullseye/daily/20220102-875/debian-11-generic-arm64-daily-20220102-875.qcow2"
+  arch: "aarch64"
+  digest: "sha512:dffa62e9f9a9543644fd99a835d8d3e9a56e8614689c38100da61bd57c6d3d1b230401286f5fe9594a3efc70e4c29671a135a744e7d2051592f0dd797c00f5c8"
+mounts:
+- location: "~"
+- location: "/tmp/lima"
+  writable: true
+# containerd is managed by Docker, not by Lima, so the values are set to false here.
+containerd:
+  system: false
+  user: false
+provision:
+- mode: system
+  script: |
+    #!/bin/sh
+    sed -i 's/host.lima.internal.*/host.lima.internal host.docker.internal/' /etc/hosts
+- mode: system
+  script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    command -v docker >/dev/null 2>&1 && exit 0
+    export DEBIAN_FRONTEND=noninteractive
+    curl -fsSL https://get.docker.com | sh
+    # NOTE: you may remove the lines below, if you prefer to use rootful docker, not rootless
+    systemctl disable --now docker
+    apt-get install -y uidmap dbus-user-session
+- mode: user
+  script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    systemctl --user start dbus
+    dockerd-rootless-setuptool.sh install
+    docker context use rootless
+probes:
+- script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    if ! timeout 30s bash -c "until command -v docker >/dev/null 2>&1; do sleep 3; done"; then
+      echo >&2 "docker is not installed yet"
+      exit 1
+    fi
+    if ! timeout 30s bash -c "until pgrep rootlesskit; do sleep 3; done"; then
+      echo >&2 "rootlesskit (used by rootless docker) is not running"
+      exit 1
+    fi
+  hint: See "/var/log/cloud-init-output.log". in the guest
+portForwards:
+- guestSocket: "/run/user/{{.UID}}/docker.sock"
+  hostSocket: "{{.Dir}}/sock/docker.sock"
+message: |
+  To run `docker` on the host (assumes docker-cli is installed):
+  $ export DOCKER_HOST=unix://{{.Dir}}/sock/docker.sock
+  $ docker ...
